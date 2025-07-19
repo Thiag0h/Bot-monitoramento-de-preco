@@ -5,21 +5,21 @@ from bs4 import BeautifulSoup
 from discord.ext import commands
 from dotenv import load_dotenv
 import os
+from urllib.parse import urlparse  # Para extrair domínio do link
 
-# Carrega as variáveis do arquivo .env
+# Carrega as variáveis do .env (como o TOKEN do bot)
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 
 # Intents e inicialização do bot
 intents = discord.Intents.default()
 intents.message_content = True
-
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# Produtos monitorados
+# Produtos sendo monitorados
 produtos = {}
 
-# 🔁 Verificação periódica de preços
+# Tarefa que verifica os preços periodicamente
 async def verificar_precos():
     await bot.wait_until_ready()
     while not bot.is_closed():
@@ -32,74 +32,64 @@ async def verificar_precos():
                     f"De: R${dados['preco']:.2f} → Para: R${preco_atual:.2f}"
                 )
                 produtos[url]['preco'] = preco_atual
-        await asyncio.sleep(3600)  # Verifica a cada hora
+        await asyncio.sleep(3600)  # Espera 1 hora entre verificações
 
-# 🧠 Função que extrai o preço de uma página da Amazon
+# 🧠 Extrai o preço do produto a partir da URL
 def extrair_preco(url):
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+        "Referer": url,  # Referer apontando para a página do produto
+        "Origin": "https://www.deiapresente.com.br",
+    }
+
     try:
-        resposta = requests.get(url, headers=headers)
-        soup = BeautifulSoup(resposta.text, 'html.parser')
+        dominio = urlparse(url).netloc
 
-        # Tenta múltiplos seletores possíveis de preço na Amazon
-        seletores = [
-            '#priceblock_ourprice',       # preço normal
-            '#priceblock_dealprice',      # preço em oferta
-            '#priceblock_saleprice',      # preço de venda
-            'span.a-price > span.a-offscreen'  # preço em vários contextos
-        ]
+        if "deiapresente.com.br" in dominio:
+            # Extrai o slug do produto a partir da URL
+            slug = url.rstrip('/').split('/')[-1]
+            api_url = f"https://www.deiapresente.com.br/web_api/products/{slug}"
 
-        for seletor in seletores:
-            preco_elemento = soup.select_one(seletor)
-            if preco_elemento:
-                preco_texto = preco_elemento.text.strip().replace('R$', '').replace('.', '').replace(',', '.')
-                return float(preco_texto)
+            resposta = requests.get(api_url, headers=headers)
+            if resposta.status_code == 200:
+                dados = resposta.json()
+                preco = float(dados.get("price", 0))
+                return preco
+            else:
+                print(f"❌ Falha ao acessar a API da loja: {resposta.status_code}")
+                return None
 
-        print("⚠️ Nenhum seletor de preço funcionou.")
+        else:
+            print(f"❌ Site {dominio} ainda não suportado.")
+            return None
 
     except Exception as e:
         print(f"❌ Erro ao extrair preço: {e}")
-    return None
+        return None
 
-# 📩 Quando receber mensagem
-@bot.event
-async def on_message(message):
-    await bot.process_commands(message)  # Permite comandos funcionarem com @bot.command()
 
-    if message.author == bot.user:
+# 📩 Comando oficial: !monitorar <URL> <preço>
+@bot.command(name="monitorar")
+async def monitorar(ctx, url: str, preco_alvo: float):
+    preco_atual = extrair_preco(url)
+
+    if preco_atual is None:
+        await ctx.send("Não consegui extrair o preço. Verifica esse link, parça.")
         return
 
-    if message.content.startswith('!monitorar'):
-        parts = message.content.split()
+    produtos[url] = {
+        'preco': preco_alvo,
+        'canal_id': ctx.channel.id
+    }
 
-        if len(parts) != 3:
-            await message.channel.send("Uso correto: `!monitorar <URL do produto> <preço desejado>`")
-            return
+    await ctx.send(f"✅ Produto monitorado! Avisarei se o preço cair abaixo de R${preco_alvo:.2f}")
 
-        url = parts[1]
-        try:
-            preco_alvo = float(parts[2])
-        except ValueError:
-            await message.channel.send("Preço inválido, escreve direito isso aí.")
-            return
-
-        preco_atual = extrair_preco(url)
-        if preco_atual is None:
-            await message.channel.send("Não consegui extrair o preço. Verifica esse link, parça.")
-            return
-
-        produtos[url] = {
-            'preco': preco_alvo,
-            'canal_id': message.channel.id
-        }
-
-        await message.channel.send(f"✅ Produto monitorado! Avisarei se o preço cair abaixo de R${preco_alvo:.2f}")
-
-# Evento quando o bot inicia
+# 🤖 Quando o bot estiver pronto
 @bot.event
 async def on_ready():
-    print("🤖 Noa está online!")
-    bot.loop.create_task(verificar_precos()) 
+    print("🤖 Bot de preços está online!")
+    bot.loop.create_task(verificar_precos())  # Inicia verificação de preços
 
-# Inicia o bot
+# 🚀 Inicia o bot
 bot.run(TOKEN)
