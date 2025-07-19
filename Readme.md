@@ -1,2 +1,1 @@
-teste
-segundo teste
+Criação de bot que monitora o preço que voce mandar
